@@ -1,6 +1,7 @@
 
 armemu: arminterpeter.nasm
-	nasm arminterpeter.nasm -o arminterpeter.o -f elf64
+	nasm arminterpeter.nasm -E | sed -e "s/^\%line/;\%line/" > arminterpeter.s  
+	nasm -a arminterpeter.s -o arminterpeter.o -f elf64
 	ld arminterpeter.o -o armemu
 
 armdisasm: armdisasm.cc
