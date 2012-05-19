@@ -1,5 +1,5 @@
 ; Trying to implement an arm interpeter in asm (later to be expaned
-; to a jit compiler, if I don't come to my sences and decide this was
+; to a jit compiler, if I don't come to my senses and decide this was
 ; a horriable idea.)
 
 ; Thats why its called an experment.
@@ -8,6 +8,43 @@ BITS 64
 
 section .text
 	global _start
+
+%macro Field 3-4 4 ; Access a field from a word. Defaults to 4 bits wide
+	%if %1 != %2 ; Todo can we make this use smarter movs if feilds are aligned?
+		mov %1, %2
+	%endif
+	%if %3 > 0
+		shr %1, %3
+	%endif
+	and %1, (1<<%4)-1
+%endmacro
+
+%macro LoadReg 2 ; Load from register (uses rbx)
+	%ifid %2
+		%if %2 != ebx && %2 != rbx
+			mov ebx, %2
+		%endif
+		mov %1, dword [rsi + rbx*4]
+	%else
+		mov %1, dword [rsi + %2*4]
+	%endif
+%endmacro
+
+%macro StoreReg 2 ; Store to register (uses rbx)
+	%ifid %1
+		%if %1 != ebx
+			mov ebx, %1
+		%endif
+		mov dword [rsi + rbx*4], %2
+	%else
+		mov dword [rsi + %1*4], %2
+	%endif
+%endmacro
+
+%macro Setbit 3
+	shl %2, %3
+	or %1, %2
+%endmacro
 
 ; Map x86 flags to arm flags
 ;   This code is common to a large number of code fragments, so we save space
@@ -19,29 +56,28 @@ storeFlags:
 	setc cl ; C flag
 	seto dl ; V flag
 	and r15d, 0x0fffffff ; Clear flags in MSR	
-	shl eax, 31
-	or r15d, eax
-	shl ebx, 30
-	or r15d, ebx
-	shl ecx, 29
-	or r15d, ecx
-	shl edx, 28
-	or r15d, edx
+	Setbit r15d, eax, 31
+	Setbit r15d, ebx, 30
+	Setbit r15d, ecx, 29
+	Setbit r15d, edx, 28
 incrementProgramCounter:
 	add dword [rsi + 15*4], 4 ; Increment the program counter
 
 ; Entry point
 execute:
-	mov eax, [rsi + 15*4] ; load program couner
+	LoadReg eax, 15 ; load program couner
 	lea rax, [rax + memory]
 	mov eax, [rax] ; load arm instruction
 	; We do the condition check and jumptable calculations at the same time
 	; For most instructions we need to do both and hopefully they 
 	; will execute in parallel (TODO: benchmark this)
 	mov ebx, eax 
-	sar ebx, 20 - 5 ; shift and mask bits 20-27 for jump table
+	shr ebx, 20 - 5 ; shift and mask bits 20-27
 	and rbx, 1111111100000b ; mask
 	mov dl, al
+	shr dl, 3 ; grab bits 4-7
+	and dl, 0x1e
+	or bl, dl ; and combine them with bits 20-27 to make our jump entry
 	
 	mov ecx, eax
 	shr ecx, 28 ; condition bits
@@ -50,11 +86,12 @@ execute:
 	jg never ; 0xf, never executed (AKA special instructions) 
 	; TODO: more conditionals
 @true:
-	movzx bx, [jmptable + rbx] ; load 16 bit value and zero extend
-	mov edx, eax
-	mov ecx, eax ; TODO: find optimium location for these movs
-off:jmp [rel+rbx]
+	movzx rdx, word [jmptable + rbx] ; load 16 bit value and zero extend
+	lea rdx, [base + rdx]
+dispatch:
+	jmp rdx
 
+base:
 ; This macro generates a code fragment for each meaningful position in the jumptable
 ; Doing this as a macro allows for a compact represenation of the arm instruction set
 %assign i 0 
@@ -75,31 +112,26 @@ off:jmp [rel+rbx]
 		%if (!(opcode & 0xc == 0x8) || S) ; Not a Miscellaneous instruction
 			; decode operands
 			%if !(opcode == 0xd) && !(opcode == 0xf) ; Move/Move Not don't use Rn
-				shr ecx, 16
-				and cx, 0x0f ; Rn
-				mov ebx, ecx
-				mov r8d, [rsi + rbx*4] ; load Rn
+				Field ecx, eax, 16 ; Rn
+				LoadReg r8d, ecx ; load Rn
 			%endif
 			%if opcode > 0xb || opcode < 0x8 ; Test opcodes don't store a result
-				shr edx, 12
-				and dx, 0x0f ; Rd
+				Field edx, eax, 12 ; Rd
 			%endif
 
 			; The fancy shifter operand
 			%if (i & 0xe00) == 0 ; Register shift
 				%if (i & 0x1) ; By register
-					movzx ebx, ah
-					and bl, 0xf
-					mov ecx, [rsi + rbx*4] ; load Rm
+					;movzx ebx, ah
+					;and bl, 0xf ; TODO: Can I build this optimisation into the macro
+					Field ebx, eax, 0
+					LoadReg ecx, ebx ; load Rm
 					and cl, 0xf ; Mask of any extra shifting, which x86 doesn't support
 				%else
-					mov cx, ax
-					shl cx, 7
-					and cx, 0x1f
+					Field cx, ax, 7, 5
 				%endif ; amount to shift now loaded in cl
-				mov ebx, eax
-				and bx, 0xf ; Rm
-				mov eax, [rsi + rbx*4] ; load Rm (value to shift)
+				Field ebx, eax, 0 ; Rm
+				LoadReg eax, ebx ; load Rm (value to shift)
 				%assign shift (i >> 1) & 3
 				%if shift == 0
 					shl	eax, cl
@@ -112,10 +144,9 @@ off:jmp [rel+rbx]
 					; fixme Implement 5.1.13 Rotate right with extend
 				%endif
 			%else ; intermediate 
-				mov cl, ah
-				and cl, 0x0f
+				Field cl, ah, 0
 				shl cl, 1
-				and eax, 0xff
+				Field eax, eax, 0, 8
 				ror eax, cl
 			%endif
 
@@ -163,8 +194,7 @@ off:jmp [rel+rbx]
 
 			; Save result back to Rd
 			%if opcode > 0xb || opcode < 0x8 ; Test opcodes don't store a result
-				mov ebx, edx
-				mov [rsi + rbx*4], eax
+				StoreReg edx, eax
 			%endif
 			%if S ; Set the flags if needed
 				; Note, don't do any extra math between the main instruction and here
@@ -172,34 +202,42 @@ off:jmp [rel+rbx]
 			%else
 				jmp incrementProgramCounter ; increment PC and execute next instruction
 			%endif
-		%else ; Miscellaneous instruction
+		%else ; Miscellaneous instructions
 			%if i & 0x02f == 0 ; MRS
-				mov ebx, eax
-				shr ebx, 12
-				and bx, 0xf ; Calculate register
+				Field ebx, eax, 12 ; Calculate register
 				%if i & 0x040
 					mov eax, [spsr] 
-					mov [rsi + rbx*4], eax ; Save spsr into reg
+					StoreReg ebx, eax ; Save spsr into reg
 				%else
-					mov [rsi + rbx*4], r15d ; Save cpsr into reg
+					StoreReg ebx, r15d ; Save cpsr into reg
 				%endif
 				jmp incrementProgramCounter
 			%elif i & 0x2f == 0x20 ; MSR (register operand)
 				movsx ebx, al ; Calculate register (top of al is already 0)
-				mov r15d, [rsi + rbx*4]
+				LoadReg r15d, ebx
 				jmp incrementProgramCounter
 			%else
 				ret
 			%endif
 		%endif
-		%elif i & 0xe00 == 0x800 ; load store multiple
-			shr ecx, 16
-			and cx, 0xf ; Rn
-			movzx ebx, cx 
-			%if i &0x020 ; W (write back to register)
-				push rbx ; Store Rn for later
+		%elif i & 0xc00 == 0x400 ; load/store word/byte
+			; load registers
+			Field ecx, eax, 16 ; Rn
+			LoadReg r8d, ecx ; load Rn
+			Field edx, eax, 12 ; Rd
+			%if i & 0x200 ; Intermediate
+
+			%else ; register
+
 			%endif
-			mov ebp, [rsi + rbx*4] ; load register
+
+			
+		%elif i & 0xe00 == 0x800 ; load store multiple
+			Field ebx, eax, 16 ; Rn
+			%if i &0x020 ; W (write back to register)
+				push rbx ; StoreReg Rn for later
+			%endif
+			LoadReg ebp, ebx ; load register
 			lea rbp, [rbp + memory]
 			mov cx, 16
 			mov ebx, 0
@@ -207,44 +245,44 @@ off:jmp [rel+rbx]
 			dec cx ; deincrement counter
 			jz .end 
 			shr ax, 1
-			jnc .loop 
+			jnc .loop
 			%if i & 0x010 ; L (load or store)
 				mov edx, [rbp] ; load
-				mov [rsi + rbx*4], edx
-			%else 
-				mov edx, [rsi + rbx*4] 
+				StoreReg ebx, edx
+			%else
+				LoadReg edx, ebx
 				mov [rbp], edx ; store
 			%endif
 			%if (i & 0x080 != 0) ; U (direction)
 				add ebp, 4
 			%else
-				sub ebp, 4 ; FIXME: Chances are these are the wrong way around,
-						   ; I couldn't be bothered checking
+				sub ebp, 4
 			%endif
 			add rbp, 4
 			jmp .loop
 		.end:
 			%if i &0x020 ; W (write back to register)
 				pop rbx ; load Rn
-				mov [rsi + rbx*4], ebp
+				StoreReg ebx, ebp
 			%endif
 			jmp incrementProgramCounter
 
 		%elif i & 0xe00 == 0xa00 ; branch instructions
-			mov ecx, [esi + 15*4] ; load PC
+			LoadReg ecx, 15 ; load PC
 			shl eax, 8 ; Chop off top 8 bits,
 			sar eax, 6 ; but sign extend and shift left by two
 			add eax, ecx ; add offset to program counter
-			mov [esi + 15*4], eax ; 
+			add eax, 8
+			StoreReg 15, eax
 			%if i & 0x100 ; if L is set
 				add ecx, 4 ; Calculate next address
-				mov [esi +14*4], ecx ; and store in Link register
+				StoreReg 14, ecx ; and store in Link register
 			%endif
 			jmp execute ; next instruction
 			
 		%elif i & 0xf00 == 0xf00 ; Software interrupt
 			; TODO: store state correctly
-			mov dword [rsi + 15*4], 0x0000008
+			StoreReg 15, 0x0000008
 			jmp execute
 		%else
 			ret
@@ -257,6 +295,7 @@ undefined_instruction:
 	ret
 
 never:
+	ret
 
 _start:
 	; We will just compile in the arm code to emulate for now. PC starts at 0
@@ -291,20 +330,21 @@ jmptable: ; build jumptable
 		%assign num i & 0xff7
 	%endif
 	%if (i & 0xfb0 == 0x300) || (i & 0xe01 == 0x601) ; Undefined instruction
-		dw undefined_instruction - off
+		dw undefined_instruction - base
 	%else
-		dw fragment_%+num - off ; calcualte offset to function fragment
+		dw fragment_%+num - base ; calcualte offset to function fragment
 	%endif
 %assign i i+1 ; i++
 %endrep
 
+align 16
+reg		dd 	0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0x5c
+
 cpsr	dd	1
 spsr	dd	1
 
-section .bss
-reg		resd 	16
 align 16
-memory	resb	100000h
-
-
+memory:
+	incbin "test/fast.bin"
+	times 100000 db 0
 
