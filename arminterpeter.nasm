@@ -9,6 +9,16 @@ BITS 64
 section .text
 	global _start
 
+%define immediate 0
+%define Rm 0
+%define Rs 8
+%define rotate
+%define Rd 12
+%define Rn 16
+
+%define PC 15
+%define LR 14
+
 %macro Field 3-4 4 ; Access a field from a word. Defaults to 4 bits wide
 	%if %1 != %2 ; Todo can we make this use smarter movs if feilds are aligned?
 		mov %1, %2
@@ -119,25 +129,23 @@ base:
 		%if (!(opcode & 0xc == 0x8) || S) ; Not a Miscellaneous instruction
 			; decode operands
 			%if !(opcode == 0xd) && !(opcode == 0xf) ; Move/Move Not don't use Rn
-				Field ecx, eax, 16 ; Rn
+				Field ecx, eax, Rn
 				LoadReg r8d, ecx ; load Rn
 			%endif
 			%if opcode > 0xb || opcode < 0x8 ; Test opcodes don't store a result
-				Field edx, eax, 12 ; Rd
+				Field edx, eax, Rd
 			%endif
 
 			; The fancy shifter operand
 			%if (i & 0xe00) == 0 ; Register shift
 				%if (i & 0x1) ; By register
-					;movzx ebx, ah
-					;and bl, 0xf ; TODO: Can I build this optimisation into the macro
-					Field ebx, eax, 0
+					Field ebx, eax, Rm
 					LoadReg ecx, ebx ; load Rm
 					and cl, 0xf ; Mask of any extra shifting, which x86 doesn't support
 				%else
 					Field cx, ax, 7, 5
 				%endif ; amount to shift now loaded in cl
-				Field ebx, eax, 0 ; Rm
+				Field ebx, eax, Rm
 				LoadReg eax, ebx ; load Rm (value to shift)
 				%assign shift (i >> 1) & 3
 				%if shift == 0
@@ -150,8 +158,8 @@ base:
 					ror eax, cl
 					; fixme Implement 5.1.13 Rotate right with extend
 				%endif
-			%else ; intermediate 
-				Field cl, ah, 0
+			%else ; immediate
+				Field cl, ah, 0 ; rotate
 				shl cl, 1
 				Field eax, eax, 0, 8
 				ror eax, cl
@@ -211,7 +219,7 @@ base:
 			%endif
 		%else ; Miscellaneous instructions
 			%if i & 0x02f == 0 ; MRS
-				Field ebx, eax, 12 ; Calculate register
+				Field ebx, eax, Rd ; Calculate register
 				%if i & 0x040
 					mov eax, [spsr] 
 					StoreReg ebx, eax ; Save spsr into reg
@@ -228,18 +236,21 @@ base:
 			%endif
 		%endif
 		%elif i & 0xc00 == 0x400 ; load/store word/byte
+			ret
 			; load registers
-			Field ecx, eax, 16 ; Rn
+			Field ecx, eax, Rn
 			LoadReg r8d, ecx ; load Rn
-			Field edx, eax, 12 ; Rd
+			Field edx, eax, Rd
 			%if i & 0x200 ; Intermediate
-
+				
 			%else ; register
-
+				
 			%endif
 
 			
 		%elif i & 0xe00 == 0x800 ; load store multiple
+			ret
+			%if 0
 			Field ebx, eax, 16 ; Rn
 			%if i &0x020 ; W (write back to register)
 				push rbx ; StoreReg Rn for later
@@ -273,23 +284,24 @@ base:
 				StoreReg ebx, ebp
 			%endif
 			jmp incrementProgramCounter
+			%endif 
 
 		%elif i & 0xe00 == 0xa00 ; branch instructions
-			LoadReg ecx, 15 ; load PC
+			LoadReg ecx, PC ; load PC
 			shl eax, 8 ; Chop off top 8 bits,
 			sar eax, 6 ; but sign extend and shift left by two
 			add eax, ecx ; add offset to program counter
 			add eax, 8
-			StoreReg 15, eax
+			StoreReg PC, eax
 			%if i & 0x100 ; if L is set
 				add ecx, 4 ; Calculate next address
-				StoreReg 14, ecx ; and store in Link register
+				StoreReg LR, ecx ; and store in Link register
 			%endif
 			jmp execute ; next instruction
 			
 		%elif i & 0xf00 == 0xf00 ; Software interrupt
 			; TODO: store state correctly
-			StoreReg 15, 0x0000008
+			StoreReg PC, 0x0000008
 			jmp execute
 		%else
 			ret
@@ -310,7 +322,7 @@ _start:
 	call execute
 	; Exit correctly
 	mov rax,60
-	mov rdi,0
+	LoadReg edi, PC
 	syscall
 
 
