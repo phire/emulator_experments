@@ -46,6 +46,13 @@ section .text
 	or %1, %2
 %endmacro
 
+%macro consertiveAlign 2 ; Aligns only if it can be done with %2 or less bytes
+	%assign diff (((%1) - (($-$$) % (%1))) % (%1))
+	%if diff <= %2
+		times diff nop
+	%endif
+%endmacro
+
 ; Map x86 flags to arm flags
 ;   This code is common to a large number of code fragments, so we save space
 ; by putting it here
@@ -104,7 +111,7 @@ base:
    && ((i&0xe00 != 0x800) || (i&0xff0 == i)) \
    && ((i&0xe00 != 0x600) || (i&0xff7 == i)) \
    && !((i & 0xfb0 == 0x300) || (i & 0xe01 == 0x601)) 
-	;align 16
+	consertiveAlign 16, 5 ; align if we are getting near the end of the instruction fetch
 	fragment_%+i:
 		%if i < 0x400 && i&0xe09 != 9  ; Dataprocessing instructions
 		%assign opcode (i >> 5) & 0xf
