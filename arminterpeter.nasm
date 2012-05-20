@@ -45,8 +45,15 @@ section .text
 		%if %1 != ebx
 			mov ebx, %1
 		%endif
+		cmp bx, 15
+		jnz .skip
+		add %2, 8
+	.skip:
 		mov dword [rsi + rbx*4], %2
 	%else
+		%if %1 == PC
+			add %2, 8
+		%endif
 		mov dword [rsi + %1*4], %2
 	%endif
 %endmacro
@@ -68,6 +75,10 @@ section .text
 ; by putting it here
 storeFlags:
 	; copy out all the flags before we do any math/shifting
+	mov eax, 0
+	mov ebx, 0
+	mov ecx, 0
+	mov edx, 0
 	sets al ; N flag
 	setz bl ; Z flag
 	setc cl ; C flag
@@ -83,7 +94,7 @@ incrementProgramCounter:
 ; Entry point
 execute:
 	LoadReg eax, 15 ; load program couner
-	lea rax, [rax + memory]
+	lea rax, [rax + memory - 8]
 	mov eax, [rax] ; load arm instruction
 	; We do the condition check and jumptable calculations at the same time
 	; For most instructions we need to do both and hopefully they 
@@ -99,13 +110,22 @@ execute:
 	mov ecx, eax
 	shr ecx, 28 ; condition bits
 	cmp cl, 0xe
+	movzx rdx, word [jmptable + rbx] ; load 16 bit jumptable entry and zero extend
+dispatch:
+
 	je @true ; Always executed
 	jg never ; 0xf, never executed (AKA special instructions) 
-	; TODO: more conditionals
+	
+	mov ebx, r15d
+	shr ebx, 28   ; grab condition bits
+	mov bx, [ConditionBitfield + rbx]
+	mov bp, 1
+	shl bp, cl
+	test bp, bx
+	jz incrementProgramCounter ; Tough luck, next instruction
+	
 @true:
-	movzx rdx, word [jmptable + rbx] ; load 16 bit value and zero extend
 	lea rdx, [base + rdx]
-dispatch:
 	jmp rdx
 
 base:
@@ -175,35 +195,33 @@ base:
 			%elif opcode == 0x1 ; EOR - logical Exclusive OR
 				xor eax, r8d
 			%elif opcode == 0x2 ; SUB - Subtract
-				sub eax, r8d
-			%elif opcode == 0x3 ; RSB - Reverse Subtract
 				sub r8d, eax
 				mov eax, r8d
+			%elif opcode == 0x3 ; RSB - Reverse Subtract
+				sub eax, r8d
 			%elif opcode == 0x4 ; ADD - Add
 				add eax, r8d
 			%elif opcode == 0x5 ; ADC - Add with Carry
 				adc eax, r8d
 			%elif opcode == 0x6 ; SBC - Subtract with Carry
-				sbb eax, r8d
-			%elif opcode == 0x7 ; RSC - Reverse Subtract with Carry
 				sbb r8d, eax
 				mov eax, r8d
+			%elif opcode == 0x7 ; RSC - Reverse Subtract with Carry
+				sbb eax, r8d
 			%elif opcode == 0x8 ; TST - Test
 				and eax, r8d
 			%elif opcode == 0x9 ; TEQ - Test Equivalence
 				xor eax, r8d
 			%elif opcode == 0xa ; CMP - Compare
-				sub eax, r8d
+				sub r8d, eax
 			%elif opcode == 0xb ; CMN - Compare Negated
 				add eax, r8d
 			%elif opcode == 0xc ; ORR - Logical (inclusive) OR
 				or eax, r8d
 			%elif opcode == 0xd ; MOV - Move
-				mov eax, r8d
 			%elif opcode == 0xe ; BIC - Bit Clear
 				btr eax, r8d
 			%elif opcode == 0xf ; MVN - Move Not (inverse)
-				mov eax, r8d
 				not eax
 			%endif
 
@@ -253,12 +271,13 @@ base:
 				Field ecx, eax, immediate, 12
 			%endif
 
-			Field ebp, eax, Rn ; Base register
+			Field ebx, eax, Rn ; Base register
+			LoadReg ebp, ebx ; Base address
 			%if P
 				%if U ; Direction
-					add ebp, ebx
+					add ebp, ecx
 				%else
-					sub ebp, ebx
+					sub ebp, ecx
 				%endif
 			%endif
 			
@@ -328,7 +347,7 @@ base:
 			shl eax, 8 ; Chop off top 8 bits,
 			sar eax, 6 ; but sign extend and shift left by two
 			add eax, ecx ; add offset to program counter
-			add eax, 8
+			;add eax, 8
 			StoreReg PC, eax
 			%if i & 0x100 ; if L is set
 				add ecx, 4 ; Calculate next address
@@ -337,10 +356,12 @@ base:
 			jmp execute ; next instruction
 			
 		%elif i & 0xf00 == 0xf00 ; Software interrupt
-			StoreReg PC, 0xFE
+			mov ebx, 0xfe
+			StoreReg PC, ebx
 			ret
 			; TODO: store state correctly
-			StoreReg PC, 0x0000008
+			mov ebx, 0x0000008
+			StoreReg PC, ebx
 			jmp execute
 		%else
 			ret
@@ -362,6 +383,7 @@ _start:
 	; Exit correctly
 	mov rax,60
 	LoadReg edi, PC
+	sub edi, 8
 	syscall
 
 
@@ -398,13 +420,18 @@ jmptable: ; build jumptable
 %endrep
 
 align 16
-reg		dd 	0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0x5c
+reg		dd 	0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0x5c+8 
+; Arm's pc is offset by 8 due to crazy pipeline issues
 
 cpsr	dd	1
 spsr	dd	1
 
 align 16
+ConditionBitfield:
+		dw  0x54aa, 0x686a, 0x55a6, 0x6966, 0x66a9, 0x6a69, 0x64a5, 0x6865, 0x689a, 0x685a, 0x6996, 0x6956, 0x6a99, 0x6a59, 0x6895, 0x6855
+
+align 16
 memory:
 	incbin "test/fast.bin"
-	times 100000 db 0
+	times 0x100000 db 0
 
