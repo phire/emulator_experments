@@ -120,13 +120,13 @@ base:
    && (!((i&0xe00 == 0) && (i & 1 == 0)) || (i&0xff7 == i)) \
    && ((i&0xe00 != 0x800) || (i&0xff0 == i)) \
    && ((i&0xe00 != 0x600) || (i&0xff7 == i)) \
+   && ((i&0xe00 != 0x400) || (i&0xff0 == i)) \
    && !((i & 0xfb0 == 0x300) || (i & 0xe01 == 0x601)) 
-	consertiveAlign 16, 5 ; align if we are getting near the end of the instruction fetch
+;	consertiveAlign 16, 5 ; align if we are getting near the end of the instruction fetch
 	fragment_%+i:
-		%if i < 0x400 && i&0xe09 != 9  ; Dataprocessing instructions
+		%if i < 0x400 && i&0xe09 != 9 && i&0x190 != 0x100; Dataprocessing instructions
 		%assign opcode (i >> 5) & 0xf
 		%assign S i & 0x10
-		%if (!(opcode & 0xc == 0x8) || S) ; Not a Miscellaneous instruction
 			; decode operands
 			%if !(opcode == 0xd) && !(opcode == 0xf) ; Move/Move Not don't use Rn
 				Field ecx, eax, Rn
@@ -217,37 +217,74 @@ base:
 			%else
 				jmp incrementProgramCounter ; increment PC and execute next instruction
 			%endif
-		%else ; Miscellaneous instructions
-			%if i & 0x02f == 0 ; MRS
-				Field ebx, eax, Rd ; Calculate register
-				%if i & 0x040
-					mov eax, [spsr] 
-					StoreReg ebx, eax ; Save spsr into reg
-				%else
-					StoreReg ebx, r15d ; Save cpsr into reg
-				%endif
-				jmp incrementProgramCounter
-			%elif i & 0x2f == 0x20 ; MSR (register operand)
-				movsx ebx, al ; Calculate register (top of al is already 0)
-				LoadReg r15d, ebx
-				jmp incrementProgramCounter
+		%elif i & 0xfbf == 0x100 ; MRS
+			Field ebx, eax, Rd ; Calculate register
+			%if i & 0x040
+				mov eax, [spsr] 
+				StoreReg ebx, eax ; Save spsr into reg
 			%else
-				ret
+				StoreReg ebx, r15d ; Save cpsr into reg
 			%endif
-		%endif
+			jmp incrementProgramCounter
+		%elif i & 0xfbf == 0x120 ; MSR (register operand)
+			movsx ebx, al ; Calculate register (top of al is already 0)
+			LoadReg r15d, ebx
+			jmp incrementProgramCounter
+		%elif i & 0xfff == 0x121 ; BX (Branch to register, with exchange)
+			Field ebx, eax, Rm
+			LoadReg eax, ebx
+			StoreReg PC, eax
+			jmp execute
 		%elif i & 0xc00 == 0x400 ; load/store word/byte
-			ret
-			; load registers
-			Field ecx, eax, Rn
-			LoadReg r8d, ecx ; load Rn
-			Field edx, eax, Rd
-			%if i & 0x200 ; Intermediate
-				
-			%else ; register
-				
+			%assign I i & 0x200 ; ScaledRegister/Immediate
+			%assign P i & 0x100 ; 
+			%assign U i & 0x080 ; Direction
+			%assign B i & 0x040 ; Byte/Word
+			%assign W i & 0x020 ; Base register writeback
+			%assign L i & 0x010 ; Load/Store
+
+			%if W
+				ret ; Not implemented
+			%endif
+			; Offsets
+			%if I ; register with shift
+				ret ; Not implemented
+			%else ; Immediate
+				Field ecx, eax, immediate, 12
 			%endif
 
+			Field ebp, eax, Rn ; Base register
+			%if P
+				%if U ; Direction
+					add ebp, ebx
+				%else
+					sub ebp, ebx
+				%endif
+			%endif
 			
+			Field ebx, eax, Rd
+			%if L
+				%if B
+					movzx edx, Byte [ebp + memory]
+				%else
+					mov edx, Dword [ebp + memory]
+				%endif
+				%if !P
+					add edx, ecx
+				%endif
+				StoreReg ebx, edx
+			%else
+				LoadReg edx, ebx
+				%if !P
+					add edx, ecx
+				%endif
+				%if B
+					mov Byte [ebp + memory], dl
+				%else
+					mov Dword [ebp + memory], edx
+				%endif
+			%endif
+			jmp incrementProgramCounter
 		%elif i & 0xe00 == 0x800 ; load store multiple
 			ret
 			%if 0
@@ -300,6 +337,8 @@ base:
 			jmp execute ; next instruction
 			
 		%elif i & 0xf00 == 0xf00 ; Software interrupt
+			StoreReg PC, 0xFE
+			ret
 			; TODO: store state correctly
 			StoreReg PC, 0x0000008
 			jmp execute
@@ -347,6 +386,8 @@ jmptable: ; build jumptable
 		%assign num i & 0xff0
 	%elif i & 0xe00 == 0x600
 		%assign num i & 0xff7
+	%elif i & 0xe00 == 0x400
+		%assign num i & 0xff0
 	%endif
 	%if (i & 0xfb0 == 0x300) || (i & 0xe01 == 0x601) ; Undefined instruction
 		dw undefined_instruction - base
