@@ -1,10 +1,16 @@
-all: armemu nocodegen nocodegen-clang
+all: nocodegen nocodegen-clang
+
+nocodegen-pgo: nocodegen.c
+	gcc -g -O3 -Wall nocodegen.c -o nocodegen-pgo -fprofile-generate
+	./nocodegen-pgo
+	gcc -g -O3 -Wall nocodegen.c -o nocodegen-pgo -fprofile-use
+
 
 nocodegen: nocodegen.c
-	gcc -g -O3 -Wall nocodegen.c -o nocodegen
+	gcc -g -O3 -Wall nocodegen.c -o nocodegen -march=native #-fno-tree-tail-merge -fno-crossjumping
 
 nocodegen-clang: nocodegen.c
-	clang -g -O3 -Wall nocodegen.c -o nocodegen-clang
+	clang -g -O4 -Wall nocodegen.c -o nocodegen-clang
 
 armemu: arminterpeter.nasm
 	nasm arminterpeter.nasm -E > tmp
