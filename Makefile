@@ -5,9 +5,8 @@ nocodegen-pgo: nocodegen.c
 	./nocodegen-pgo
 	gcc -g -O3 -Wall nocodegen.c -o nocodegen-pgo -fprofile-use
 
-
 nocodegen: nocodegen.c
-	gcc -g -O3 -Wall nocodegen.c -o nocodegen -march=native #-fno-tree-tail-merge -fno-crossjumping
+	gcc -g -O3 -Wall nocodegen.c -o nocodegen
 
 nocodegen-clang: nocodegen.c
 	clang -g -O4 -Wall nocodegen.c -o nocodegen-clang

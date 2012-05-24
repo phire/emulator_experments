@@ -22,18 +22,10 @@
 
 #define addFlags { c = ((signed)((Rn ^ shifter) ^ r) < 0) ^ ((signed)((Rn ^ shifter) & ~(Rn ^ shifter)) < 0); v = (signed)((Rn ^ r) & ~ (Rn ^ shifter)) < 0; }
 #define subFlags { c = ((signed)((Rn ^ shifter) ^ r) < 0) ^ ((signed)((Rn ^ shifter) & (Rn ^ shifter)) < 0); v = (signed)((Rn ^ r) & (Rn ^ shifter)) < 0; }
-/*
-#define addFlags if(switchyThing & 1) { c = (((Rn ^ shifter) ^ r) < 0) ^ (((Rn ^ shifter) & ~(Rn ^ shifter)) < 0); v = ((Rn ^ r) & ~ (Rn ^ shifter)) < 0;}
-#define subFlags if(switchyThing & 1) { c = (((Rn ^ shifter) ^ r) < 0) ^ (((Rn ^ shifter) & (Rn ^ shifter)) < 0); v = ((Rn ^ r) & (Rn ^ shifter)) < 0;}
-*/
-
-
 
 uint32_t reg[16];
 uint32_t cpsr;
 uint32_t mem[0x40000];
-
-uint64_t count = 0;
 
 static unsigned char test_fast_bin[] = {
   0x08, 0xd0, 0x4d, 0xe2, 0x00, 0x30, 0xa0, 0xe3, 0x04, 0x30, 0x8d, 0xe5,
@@ -45,7 +37,7 @@ static unsigned char test_fast_bin[] = {
   0xf4, 0xff, 0xff, 0xda, 0x00, 0x00, 0xa0, 0xe3, 0x08, 0xd0, 0x8d, 0xe2,
   0x1e, 0xff, 0x2f, 0xe1, 0xff, 0xe0, 0xf5, 0x05, 0x01, 0xd6, 0xa0, 0xe3,
   0xe6, 0xff, 0xff, 0xeb, 0x64, 0x00, 0x00, 0xef
-};
+}; // 1100000014 instructions, tight loop with lots of loads and stores.
 const unsigned int test_fast_bin_len = 104;
 
 static const uint16_t conditions[] = { 0x54aa, 0x686a, 0x55a6, 0x6966, 0x66a9, 0x6a69, 0x64a5, 0x6865, 0x689a, 0x685a, 0x6996, 0x6956, 0x6a99, 0x6a59, 0x6895, 0x6855 }; 
@@ -143,23 +135,22 @@ static inline void loadstore(const uint32_t switchyThing, const uint32_t ins) {
 
 void execute() {
 	for(;;) {
-		count++;
-		uint32_t ins = mem[(reg[PC]-8) >> 2];
-		uint8_t conditional = ins >> 28;
-		uint8_t switchyThing = (ins >> 20) & 0xff;
+		const uint32_t ins = mem[(reg[PC]-8) >> 2];
+		const uint8_t conditional = ins >> 28;
+		const uint8_t switchyThing = (ins >> 20) & 0xff;
 		if(conditional == 0xe || conditions[cpsr >> 28] & 1 << conditional){// Conditional execution
 			switch(switchyThing) {
 			case 0x35:
-				math(switchyThing, ins);
+				math(0x35, ins);
 				break;
 			case 0x08:
-				math(switchyThing, ins);
+				math(0x08, ins);
 				break;
 			case 0x15:
-				math(switchyThing, ins);
+				math(0x15, ins);
 				break;
 			case 0x28:
-				math(switchyThing, ins);
+				math(0x28, ins);
 				break;
 			case 0x00 ... 0x7:
 			case 0x09 ... 0xf:
@@ -182,10 +173,10 @@ void execute() {
 				break;
 			}
 			case 0x58:
-				loadstore(switchyThing, ins);
+				loadstore(0x58, ins);
 				break;
 			case 0x59:
-				loadstore(switchyThing, ins);
+				loadstore(0x59, ins);
 				break;
 			case 0x40 ... 0x57: 
 			case 0x5a ... 0x7f: {
@@ -217,6 +208,5 @@ int main() {
 	reg[PC] = 0x5c+8;
 	
 	execute();
-	printf("%lu instructions executed\n", count);
 	return 0;
 }
