@@ -1,4 +1,4 @@
-all: nocodegen nocodegen-clang
+all: codegen codegen-clang
 
 nocodegen-pgo: nocodegen.c
 	gcc -g -O3 -Wall nocodegen.c -o nocodegen-pgo -fprofile-generate
@@ -10,6 +10,15 @@ nocodegen: nocodegen.c
 
 nocodegen-clang: nocodegen.c
 	clang -g -O4 -Wall nocodegen.c -o nocodegen-clang
+
+codegen.gen.c: codegen.m4.c
+	m4 codegen.m4.c -s > codegen.gen.c
+
+codegen: codegen.gen.c
+	gcc -g -O3 -Wall codegen.gen.c -o codegen -std=gnu99 -Winline
+
+codegen-clang: codegen.gen.c
+	clang -g -O4 -Wall codegen.gen.c -o codegen-clang -Winline
 
 armemu: arminterpeter.nasm
 	nasm arminterpeter.nasm -E > tmp

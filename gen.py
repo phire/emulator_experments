@@ -46,7 +46,8 @@ def al(f):
 	return True
 
 def nv(f):
-	return False
+	return True # Techincally this should be false, but this works better for BLX instructions
+		# Besides, the spec says using this condition is undefined.
 
 conditions = [eq, ne, cs, cc, mi, pl, vs, vc, hi, ls, ge, lt, gt, le, al, nv]
 
