@@ -13,9 +13,17 @@
 #define LR 14
 #define SP 13
 
-#define LOAD_Rn uint32_t Rn = reg[(ins >> 16) & 0xf];
-#define LOAD_Rm	uint32_t Rm = reg[ins & 0xf];
-#define STORE_Rd(x) reg[(ins >> 12) & 0xf] = x;
+#define STORE_Rd(x) reg[RD] = x;
+
+#define RN ((ins >> 16) &  0xf)
+#define RD ((ins >> 12) &  0xf)
+#define RM (ins &  0xf)
+#define RS ((ins >> 8) &  0xf)
+#define IMM_8 (ins & 0xff)
+#define IMM_12 (ins & 0xfff)
+#define IMM_SPLIT_8 ((ins & 0xf) | ((ins & 0xf00) >> 4))
+
+#define CARRY (!!(cpsr & 0x20000000))
 
 #define ENTER_THUMB { cpsr |= 0x20; }
 #define EXIT_THUMB { cpsr &= ~0x20; }
@@ -83,39 +91,39 @@ ALWAYS_INLINE void loadstore(const uint32_t switchyThing, const uint32_t ins) {
 
 	uint32_t offset;
 	if (I) { // I
-		offset = reg[ins & 0xf];
+		offset = reg[RM];
 	} else {
 		if(Extra)
-			offset = (ins & 0xf) | ((ins & 0xf00) >> 4);
+			offset = IMM_SPLIT_8;
 		else 
-			offset = ins & 0xfff;
+			offset = IMM_12;
 	}
 
-	uint32_t addr = reg[(ins >> 16) & 0xf]; // base (Rn)
+	uint32_t addr = reg[RN]; // base (Rn)
 	if (P) { // Preincrement
 		if (U) addr += offset; else addr -= offset;
 	}
 
 	if (L) { // Load or Store
 		switch(Size) {
-			case 1: reg[(ins >> 12) & 0xf] = ((uint8_t  *)mem)[addr];   break;
-			case 2:	reg[(ins >> 12) & 0xf] = ((uint16_t *)mem)[addr/2]; break;
-			case 4:	reg[(ins >> 12) & 0xf] = mem[addr/4]; break;
+			case 1: reg[RD] = ((uint8_t  *)mem)[addr];   break;
+			case 2:	reg[RD] = ((uint16_t *)mem)[addr/2]; break;
+			case 4:	reg[RD] = mem[addr/4]; break;
 #ifdef ARMv5E
 			case 8: 
-				reg[(ins >> 12) & 0xe] = mem[addr/4];
-				reg[((ins >> 12) & 0xe) | 1] = mem[addr/4 + 1];
+				reg[RD] = mem[addr/4];
+				reg[RD | 1] = mem[addr/4 + 1];
 #endif
 		}
 	} else {
 		switch(Size) {
-			case 1: ((uint8_t  *)mem)[addr]   = reg[(ins >> 12) & 0xf] & 0xff;   break;
-			case 2:	((uint16_t *)mem)[addr/2] = reg[(ins >> 12) & 0xf] & 0xffff; break;
-			case 4:	mem[addr/4] = reg[(ins >> 12) & 0xf]; break;
+			case 1: ((uint8_t  *)mem)[addr]   = reg[RD] & 0xff;   break;
+			case 2:	((uint16_t *)mem)[addr/2] = reg[RD] & 0xffff; break;
+			case 4:	mem[addr/4] = reg[RD]; break;
 #ifdef ARMv5E
 			case 8:
-				mem[addr/4] = reg[(ins >> 12) & 0xf];
-				mem[addr/4 + 1] = reg[((ins >> 12) & 0xf) | 1];
+				mem[addr/4] = reg[RD];
+				mem[addr/4 + 1] = reg[(RD) | 1];
 #endif
 		}
 	}
@@ -124,7 +132,7 @@ ALWAYS_INLINE void loadstore(const uint32_t switchyThing, const uint32_t ins) {
 		if (U) addr += offset; else	addr -= offset;
 	}
 	if (!P || (P && W)) // Writeback to base register (Rn)
-		reg[(ins >> 16) & 0xf] = addr;
+		reg[RN] = addr;
 
 	reg[PC] += 4;
 }
@@ -142,7 +150,7 @@ ALWAYS_INLINE void loadstoreMultiple(const uint32_t switchyThing, const uint32_t
 			reglist = reglist >> 1;
 		}
 	}
-	LOAD_Rn;
+	uint32_t Rn = reg[RN];
 
 	uint32_t addr = Rn;
 	if (!U)	addr -= numregs*4;
@@ -162,7 +170,7 @@ ALWAYS_INLINE void loadstoreMultiple(const uint32_t switchyThing, const uint32_t
 		reglist = reglist >> 1;
 	}
 	
-	if (W) reg[(ins >> 16) & 0xf] = U ? Rn + numregs*4 : Rn - numregs*4;
+	if (W) reg[RN] = U ? Rn + numregs*4 : Rn - numregs*4;
 	if (S && (ins & 0x00008000)) cpsr = spsr;
 	reg[PC] += 4;
 }
@@ -184,11 +192,11 @@ ALWAYS_INLINE unsigned int dataop(const uint8_t opcode, const uint32_t a, const 
 		case 11: // CMN - Compare negated
 			return a + b;
 		case 5: // ADC - Add with carry
-			return a + b + ((cpsr & 0x20000000) != 0);
+			return a + b + CARRY;
 		case 6: // SBC - Substract with carry
-			return (a - b) - ((cpsr & 0x20000000) == 0);
+			return (a - b) - !CARRY;
 		case 7: // RSC - Reverse Substract with carry
-			return (b - a) - ((cpsr & 0x20000000) == 0);
+			return (b - a) - !CARRY;
 		case 12: // ORR
 			return a | b;
 		case 13: // Mov
@@ -197,25 +205,24 @@ ALWAYS_INLINE unsigned int dataop(const uint8_t opcode, const uint32_t a, const 
 			return a & ~b;
 		case 15:
 			return ~b;
-		default:
-			exit(1);
-		}	
+		}
+		return -1;
 }
 
 ALWAYS_INLINE void extraLoadStoreMultiplies(const uint8_t switchyThing, const uint32_t ins) {
 	if((ins & 0x60) == 0) {
 		if((switchyThing & 0xfc) == 0x0) { // Multiply MLA and MUL
-			uint32_t Rd_reg = (ins >> 16) & 0xf; // Watch out this one instruction uses a diffrent Rd
-			uint32_t Rs = reg[(ins >>  8) & 0xf];
-			LOAD_Rm;
+			/* This one instruction mixes up the location of the Rn and Rd fields */
+			uint32_t Rs = reg[RS];
+			uint32_t Rm = reg[RM];
 
 			uint32_t r;
 			r = Rm * Rs;
 			if(switchyThing & 0x02) { // MLA
-				uint32_t Rn = reg[(ins >> 12) & 0xf]; // And a diffrent Rn
+				uint32_t Rn = reg[RD]; // Load from RD field instead of RN
 				r += Rn;
 			}
-			reg[Rd_reg] = r;
+			reg[RN] = r; // Save to RN field instead of RD
 
 			if(switchyThing & 0x01) { // Set flags (MLAS and MULS)
 				cpsr &= 0x3fffffff; // clear old flags
@@ -225,22 +232,22 @@ ALWAYS_INLINE void extraLoadStoreMultiplies(const uint8_t switchyThing, const ui
 		} else if ((switchyThing & 0xf8) == 0x1) { // Multiply (Acclumnate) long
 			uint64_t r;
 			if(switchyThing & 0x04) { // SMULL & SMLAL
-				int32_t Rs = (int32_t) reg[(ins >> 8) & 0xf];
-				int32_t Rm = (int32_t) reg[ins & 0xf];
+				int32_t Rs = (int32_t) reg[RS];
+				int32_t Rm = (int32_t) reg[RM];
 				int64_t signedr = Rs*Rm;
 				r = (uint32_t) signedr;
 			} else {
-				uint32_t Rs = reg[(ins >> 8) & 0xf];
-				LOAD_Rm;
+				uint32_t Rs = reg[RS];
+				uint32_t Rm = reg[RM];
 				r = Rs*Rm;
 			}
 
 			if(switchyThing & 0x04) { // SMLAL & UMLAL 
-				uint64_t acc = reg[(ins >> 12) & 0xf] | ((uint64_t)reg[(ins >> 16) & 0xf] << 32);
+				uint64_t acc = reg[RD] | ((uint64_t)reg[RN] << 32);
 				r = r + acc;
 			}
-			reg[(ins >> 12) & 0xf] = r & 0xffffffff;
-			reg[(ins >> 16) & 0xf] = (r >> 32) & 0xffffffff;
+			reg[RD] = r & 0xffffffff;
+			reg[RN] = (r >> 32) & 0xffffffff;
 
 			if(switchyThing & 0x01) { // Set flags (MLALS, MULLS, SMLALS & SMULS)
 				cpsr &= 0x3fffffff; // clear old flags
@@ -248,7 +255,8 @@ ALWAYS_INLINE void extraLoadStoreMultiplies(const uint8_t switchyThing, const ui
 				cpsr |= (r == 0) << 30; // Z
 			} 
 		} else { // Swap Byte
-			LOAD_Rm; LOAD_Rn;
+			uint32_t Rm = reg[RM]; 
+			uint32_t Rn = reg[RN];
 
 			uint32_t temp;
 			if(switchyThing & 0x10) {
@@ -268,17 +276,17 @@ ALWAYS_INLINE void extraLoadStoreMultiplies(const uint8_t switchyThing, const ui
 ALWAYS_INLINE void dataprocessing(const uint8_t switchyThing, const uint32_t ins) {
 		uint32_t shifter;
 		if (switchyThing & 0x20) {
-			shifter = ins & 0xff;
+			shifter = IMM_8;
 			uint8_t roll = ((ins & 0xf00) >> 7);
 			shifter = RotateRight(shifter, roll); 
 		} else {
 			uint32_t shift;
 			if ((ins & 0x90) == 0x10) {
-				shift = reg[(ins >> 8) & 0xf];
+				shift = reg[RS];
 			} else if ((ins & 0x90) == 0x00) {
 				shift = (ins >> 7) & 0x1f;
 			} else return extraLoadStoreMultiplies(switchyThing, ins);
-			shifter = reg[ins & 0xf];
+			shifter = reg[RM];
 			switch((ins >> 5) & 3) {
 			case 0:
 				shifter = shifter << shift; break;
@@ -288,12 +296,12 @@ ALWAYS_INLINE void dataprocessing(const uint8_t switchyThing, const uint32_t ins
 				shifter = (int32_t)shifter >> shift; break;
 			case 3:
 				if((ins & 0x90) == 0x00 && shift == 0) {
-					shifter = (shifter >> 1) | ((cpsr & 0x20000000) != 0) << 31; break;
+					shifter = (shifter >> 1) | CARRY << 31; break;
 				}
 				shifter = RotateRight(shifter, shift); break;
 			}
 		}
-		LOAD_Rn;
+		uint32_t Rn = reg[RN];
 
 		const uint8_t opcode = (switchyThing >> 1) & 0xf;
 		uint32_t r = dataop(opcode, Rn, shifter);
@@ -332,20 +340,20 @@ ALWAYS_INLINE void statusreg(const uint8_t switchyThing, const uint32_t ins) {
 		uint32_t value;
 
 		if(switchyThing & 0x20) {
-			value = RotateRight(ins & 0xff, ((ins & 0xf00) >> 8));
+			value = RotateRight(IMM_8, RS);
 		} else {
-			value = reg[ins & 0xf];
+			value = reg[RM];
 		}
 
 		uint32_t finalmask = 0;
-		uint8_t mask = (ins >> 16) & 0xf;
+		uint8_t mask = RN;
 		for(i = 0; i < 4; i++) {
 			if(mask & 1) finalmask |= masks[i];
 			mask = mask >> 1;
 		}
 		*sreg = value & finalmask;
 	} else {
-		reg[(ins >> 12) & 0xf] = *sreg;
+		reg[RD] = *sreg;
 	}
 	reg[PC] += 4;
 }
@@ -357,16 +365,16 @@ ALWAYS_INLINE void miscinstructions(const uint8_t switchyThing, const uint32_t i
 		return statusreg(switchyThing, ins);
 	case 1:
 		if(bits == 1) {
-			reg[PC] = reg[ins & 0xf];
+			reg[PC] = reg[RM];
 #ifdef ARMv5
 		} else if (bits == 3) {
-			reg[(ins >> 16) & 0xf] = __builtin_ctz(reg[ins & 0xf]);
+			reg[RD] = __builtin_ctz(reg[RM]);
 			reg[PC] += 4;
 		} else {NA; exit(1);} break;
 	case 3: 
 		if(bits == 1) {
 			reg[LR] = reg[PC] + 4;
-			reg[PC] = reg[ins & 0xf];
+			reg[PC] = reg[RM];
 		} else {NA; exit(1);} break;
 	case 7: 
 		if(bits == 1) {
